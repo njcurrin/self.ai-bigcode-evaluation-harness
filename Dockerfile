@@ -10,4 +10,8 @@ RUN test -f /app/generations.json && rm /app/generations.json || true
 
 RUN pip3 install .
 
-CMD ["python3", "main.py"]
+RUN mkdir -p /workspace/results /workspace/logs
+
+EXPOSE 8094
+
+CMD ["python3", "/app/api/main.py"]

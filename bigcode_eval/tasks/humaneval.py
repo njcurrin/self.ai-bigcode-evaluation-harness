@@ -95,11 +95,12 @@ class GeneralHumanEval(Task):
         :param references: list(str)
             list of str containing refrences
         """
-        results, _ = compute_code_eval(
+        results, details = compute_code_eval(
             references=references,
             predictions=generations,
             k=self.k,
             num_workers=self.num_workers,
             timeout=self.timeout,
         )
+        results["details"] = details
         return results

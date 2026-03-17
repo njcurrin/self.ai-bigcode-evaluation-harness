@@ -210,6 +210,24 @@ def parse_args():
         action="store_true",
         help="Don't run generation but benchmark groundtruth (useful for debugging)",
     )
+    parser.add_argument(
+        "--api_endpoint",
+        type=str,
+        default=None,
+        help="OpenAI-compatible completions endpoint URL (e.g. http://host:8080/v1/completions). When set, uses HTTP API instead of local model.",
+    )
+    parser.add_argument(
+        "--api_key",
+        type=str,
+        default=None,
+        help="API key for the endpoint (sent as Bearer token).",
+    )
+    parser.add_argument(
+        "--save_details_path",
+        type=str,
+        default=None,
+        help="Path to save detailed per-problem results (prompt, generation, reference, pass/fail, error).",
+    )
     return parser.parse_args()
 
 
@@ -253,114 +271,119 @@ def main():
             results[task] = evaluator.evaluate(task)
     else:
         # here we generate code and save it (evaluation is optional but True by default)
-        dict_precisions = {
-            "fp32": torch.float32,
-            "fp16": torch.float16,
-            "bf16": torch.bfloat16,
-        }
-        if args.precision not in dict_precisions:
-            raise ValueError(
-                f"Non valid precision {args.precision}, choose from: fp16, fp32, bf16"
-            )
-
-        model_kwargs = {
-            "revision": args.revision,
-            "trust_remote_code": args.trust_remote_code,
-            "token": args.use_auth_token,
-        }
-        if args.load_in_8bit:
-            print("Loading model in 8bit")
-            model_kwargs["load_in_8bit"] = args.load_in_8bit
-            model_kwargs["device_map"] = {"": accelerator.process_index}
-        elif args.load_in_4bit:
-            print("Loading model in 4bit")
-            model_kwargs["load_in_4bit"] = args.load_in_4bit
-            model_kwargs["torch_dtype"] = torch.float16
-            model_kwargs["bnb_4bit_compute_dtype"] = torch.float16            
-            model_kwargs["device_map"] = {"": accelerator.process_index}
+        if args.api_endpoint:
+            # API mode: skip local model/tokenizer loading entirely
+            print(f"Using API endpoint: {args.api_endpoint}")
+            evaluator = Evaluator(accelerator, None, None, args)
         else:
-            print(f"Loading model in {args.precision}")
-            model_kwargs["torch_dtype"] = dict_precisions[args.precision]
+            dict_precisions = {
+                "fp32": torch.float32,
+                "fp16": torch.float16,
+                "bf16": torch.bfloat16,
+            }
+            if args.precision not in dict_precisions:
+                raise ValueError(
+                    f"Non valid precision {args.precision}, choose from: fp16, fp32, bf16"
+                )
 
-            if args.max_memory_per_gpu:
-                if args.max_memory_per_gpu != "auto":
-                    model_kwargs["max_memory"] = get_gpus_max_memory(
-                        args.max_memory_per_gpu, accelerator.num_processes
-                    )
-                    model_kwargs["offload_folder"] = "offload"
-                else:
-                    model_kwargs["device_map"] = "auto"
-                    print("Loading model in auto mode")
-
-        if args.modeltype == "causal":
-            model = AutoModelForCausalLM.from_pretrained(
-                args.model,
-                **model_kwargs,
-            )
-        elif args.modeltype == "seq2seq":
-            warnings.warn(
-                "Seq2Seq models have only been tested for HumanEvalPack & CodeT5+ models."
-            )
-            model = AutoModelForSeq2SeqLM.from_pretrained(
-                args.model,
-                **model_kwargs,
-            )
-        else:
-            raise ValueError(
-                f"Non valid modeltype {args.modeltype}, choose from: causal, seq2seq"
-            )
-
-        if args.peft_model:
-            from peft import PeftModel  # dynamic import to avoid dependency on peft
-
-            model = PeftModel.from_pretrained(model, args.peft_model)
-            print("Loaded PEFT model. Merging...")
-            model.merge_and_unload()
-            print("Merge complete.")
-
-        if args.left_padding:
-            # left padding is required for some models like chatglm3-6b
-            tokenizer = AutoTokenizer.from_pretrained(
-                args.model,
-                revision=args.revision,
-                trust_remote_code=args.trust_remote_code,
-                token=args.use_auth_token,
-                padding_side="left",  
-            )
-        else:
-            # used by default for most models
-            tokenizer = AutoTokenizer.from_pretrained(
-                args.model,
-                revision=args.revision,
-                trust_remote_code=args.trust_remote_code,
-                token=args.use_auth_token,
-                truncation_side="left",
-                padding_side="right",  
-            )
-        if not tokenizer.eos_token:
-            if tokenizer.bos_token:
-                tokenizer.eos_token = tokenizer.bos_token
-                print("bos_token used as eos_token")
+            model_kwargs = {
+                "revision": args.revision,
+                "trust_remote_code": args.trust_remote_code,
+                "token": args.use_auth_token,
+            }
+            if args.load_in_8bit:
+                print("Loading model in 8bit")
+                model_kwargs["load_in_8bit"] = args.load_in_8bit
+                model_kwargs["device_map"] = {"": accelerator.process_index}
+            elif args.load_in_4bit:
+                print("Loading model in 4bit")
+                model_kwargs["load_in_4bit"] = args.load_in_4bit
+                model_kwargs["torch_dtype"] = torch.float16
+                model_kwargs["bnb_4bit_compute_dtype"] = torch.float16
+                model_kwargs["device_map"] = {"": accelerator.process_index}
             else:
-                raise ValueError("No eos_token or bos_token found")
-        try:
-            tokenizer.pad_token = tokenizer.eos_token
-            
-        # Some models like CodeGeeX2 have pad_token as a read-only property
-        except AttributeError:
-            print("Not setting pad_token to eos_token")
-            pass
-        WIZARD_LLAMA_MODELS = [
-            "WizardLM/WizardCoder-Python-34B-V1.0",
-            "WizardLM/WizardCoder-34B-V1.0",
-            "WizardLM/WizardCoder-Python-13B-V1.0"
-        ]
-        if args.model in WIZARD_LLAMA_MODELS:
-            tokenizer.bos_token = "<s>"
-            tokenizer.bos_token_id = 1
-            print("Changing bos_token to <s>")
+                print(f"Loading model in {args.precision}")
+                model_kwargs["torch_dtype"] = dict_precisions[args.precision]
 
-        evaluator = Evaluator(accelerator, model, tokenizer, args)
+                if args.max_memory_per_gpu:
+                    if args.max_memory_per_gpu != "auto":
+                        model_kwargs["max_memory"] = get_gpus_max_memory(
+                            args.max_memory_per_gpu, accelerator.num_processes
+                        )
+                        model_kwargs["offload_folder"] = "offload"
+                    else:
+                        model_kwargs["device_map"] = "auto"
+                        print("Loading model in auto mode")
+
+            if args.modeltype == "causal":
+                model = AutoModelForCausalLM.from_pretrained(
+                    args.model,
+                    **model_kwargs,
+                )
+            elif args.modeltype == "seq2seq":
+                warnings.warn(
+                    "Seq2Seq models have only been tested for HumanEvalPack & CodeT5+ models."
+                )
+                model = AutoModelForSeq2SeqLM.from_pretrained(
+                    args.model,
+                    **model_kwargs,
+                )
+            else:
+                raise ValueError(
+                    f"Non valid modeltype {args.modeltype}, choose from: causal, seq2seq"
+                )
+
+            if args.peft_model:
+                from peft import PeftModel  # dynamic import to avoid dependency on peft
+
+                model = PeftModel.from_pretrained(model, args.peft_model)
+                print("Loaded PEFT model. Merging...")
+                model.merge_and_unload()
+                print("Merge complete.")
+
+            if args.left_padding:
+                # left padding is required for some models like chatglm3-6b
+                tokenizer = AutoTokenizer.from_pretrained(
+                    args.model,
+                    revision=args.revision,
+                    trust_remote_code=args.trust_remote_code,
+                    token=args.use_auth_token,
+                    padding_side="left",
+                )
+            else:
+                # used by default for most models
+                tokenizer = AutoTokenizer.from_pretrained(
+                    args.model,
+                    revision=args.revision,
+                    trust_remote_code=args.trust_remote_code,
+                    token=args.use_auth_token,
+                    truncation_side="left",
+                    padding_side="right",
+                )
+            if not tokenizer.eos_token:
+                if tokenizer.bos_token:
+                    tokenizer.eos_token = tokenizer.bos_token
+                    print("bos_token used as eos_token")
+                else:
+                    raise ValueError("No eos_token or bos_token found")
+            try:
+                tokenizer.pad_token = tokenizer.eos_token
+
+            # Some models like CodeGeeX2 have pad_token as a read-only property
+            except AttributeError:
+                print("Not setting pad_token to eos_token")
+                pass
+            WIZARD_LLAMA_MODELS = [
+                "WizardLM/WizardCoder-Python-34B-V1.0",
+                "WizardLM/WizardCoder-34B-V1.0",
+                "WizardLM/WizardCoder-Python-13B-V1.0"
+            ]
+            if args.model in WIZARD_LLAMA_MODELS:
+                tokenizer.bos_token = "<s>"
+                tokenizer.bos_token_id = 1
+                print("Changing bos_token to <s>")
+
+            evaluator = Evaluator(accelerator, model, tokenizer, args)
 
         if (
             args.load_generations_intermediate_paths

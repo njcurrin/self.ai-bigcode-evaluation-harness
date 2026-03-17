@@ -66,19 +66,34 @@ class Evaluator:
         intermediate_save_generations_path = f"{os.path.splitext(self.args.save_generations_path)[0]}_{task_name}_intermediate.json"
         curr_sample_idx = len(curr_generations)
 
-        generations = parallel_generations(
-            task,
-            dataset,
-            self.accelerator,
-            self.model,
-            self.tokenizer,
-            n_tasks=n_tasks,
-            args=self.args,
-            curr_sample_idx=curr_sample_idx,  # curr_sample_idx will added to limit_start to fix indexing
-            save_every_k_tasks=self.args.save_every_k_tasks,
-            intermediate_generations=curr_generations,
-            intermediate_save_generations_path=intermediate_save_generations_path,
-        )
+        if getattr(self.args, "api_endpoint", None):
+            from bigcode_eval.api_generation import api_parallel_generations
+
+            generations = api_parallel_generations(
+                task,
+                dataset,
+                api_endpoint=self.args.api_endpoint,
+                n_tasks=n_tasks,
+                args=self.args,
+                curr_sample_idx=curr_sample_idx,
+                save_every_k_tasks=self.args.save_every_k_tasks,
+                intermediate_generations=curr_generations,
+                intermediate_save_generations_path=intermediate_save_generations_path,
+            )
+        else:
+            generations = parallel_generations(
+                task,
+                dataset,
+                self.accelerator,
+                self.model,
+                self.tokenizer,
+                n_tasks=n_tasks,
+                args=self.args,
+                curr_sample_idx=curr_sample_idx,  # curr_sample_idx will added to limit_start to fix indexing
+                save_every_k_tasks=self.args.save_every_k_tasks,
+                intermediate_generations=curr_generations,
+                intermediate_save_generations_path=intermediate_save_generations_path,
+            )
 
         if len(generations[0]) > self.args.n_samples:
             generations = [l[: self.args.n_samples] for l in generations]
@@ -105,6 +120,49 @@ class Evaluator:
                 os.environ["HF_ALLOW_CODE_EVAL"] = "1"
             print("Evaluating generations...")
             results = task.process_results(generations, references)
+
+            # Save detailed per-problem report if requested
+            details = results.pop("details", None)
+            if details is not None and getattr(self.args, "save_details_path", None):
+                dataset = task.get_dataset()
+                n_tasks = len(generations)
+                detailed_report = []
+                for task_id in range(n_tasks):
+                    dataset_idx = self.args.limit_start + task_id
+                    doc = dataset[dataset_idx]
+                    prompt = task.get_prompt(doc)
+                    task_results = details.get(task_id, [])
+                    # Sort by completion_id
+                    task_results.sort(key=lambda x: x[0])
+                    samples = []
+                    for completion_id, result_info in task_results:
+                        gen = generations[task_id][completion_id] if completion_id < len(generations[task_id]) else ""
+                        # Strip the prompt to show only what the model generated
+                        completion = gen[len(prompt):] if gen.startswith(prompt) else gen
+                        samples.append({
+                            "completion_id": completion_id,
+                            "generation": gen,
+                            "completion": completion,
+                            "passed": result_info["passed"],
+                            "result": result_info["result"],
+                        })
+                    entry = {
+                        "task_id": doc.get("task_id", f"task_{task_id}"),
+                        "prompt": prompt,
+                        "entry_point": doc.get("entry_point", ""),
+                        "canonical_solution": doc.get("canonical_solution", ""),
+                        "reference_test": references[task_id],
+                        "samples": samples,
+                    }
+                    detailed_report.append(entry)
+
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                details_path = f"{os.path.splitext(self.args.save_details_path)[0]}_{task_name}_{timestamp}.json"
+                with open(details_path, "w") as fp:
+                    json.dump(detailed_report, fp, indent=2)
+                    print(f"detailed results saved at {details_path}")
+
             return results
 
     def save_json_files(

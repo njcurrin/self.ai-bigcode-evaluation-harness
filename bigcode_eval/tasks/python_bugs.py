@@ -120,9 +120,14 @@ class PythonBugs(Task):
             list of str containing refrences
         """
         num_correct = 0
+        details = {}
         print("Scoring generations...")
         for i, ref in tqdm.tqdm(enumerate(references), total=len(references)):
-            for gen in generations[i]:
-                num_correct += int(gen == ref)
+            task_details = []
+            for comp_id, gen in enumerate(generations[i]):
+                passed = gen == ref
+                num_correct += int(passed)
+                task_details.append((comp_id, {"passed": passed, "result": "passed" if passed else "exact match failed"}))
+            details[i] = task_details
         accuracy = num_correct / len(references) / len(generations[0])
-        return {"mean exact match": accuracy}
+        return {"mean exact match": accuracy, "details": details}

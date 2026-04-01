@@ -131,7 +131,7 @@ class JobCreate(BaseModel):
     )
     api_endpoint: str = Field(
         ...,
-        description="OpenAI-compatible completions endpoint URL (e.g. http://self-llamolotl:8080/v1/completions)",
+        description="OpenAI-compatible endpoint URL. Use /api/completions for text completion (recommended for code eval) or /api/chat/completions for chat mode.",
     )
     model: str = Field(
         default="default",
@@ -177,7 +177,7 @@ class JobCreate(BaseModel):
         json_schema_extra = {
             "example": {
                 "tasks": "humaneval",
-                "api_endpoint": "http://self-llamolotl:8080/v1/completions",
+                "api_endpoint": "http://selfUI:8080/api/completions",
                 "model": "Qwen-7B",
                 "temperature": 0.2,
                 "n_samples": 1,
@@ -446,6 +446,9 @@ def create_job(req: JobCreate) -> Job:
     if req.do_sample:
         cmd.append("--do_sample")
 
+    # Live events file for streaming prompt/response pairs
+    live_events_file = str(LOGS_DIR / f"{job_id}.events.jsonl")
+
     # Open log file
     try:
         log_fh = open(log_file, "w")
@@ -456,6 +459,7 @@ def create_job(req: JobCreate) -> Job:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env["TOKENIZERS_PARALLELISM"] = "false"
+    env["BIGCODE_LIVE_EVENTS_PATH"] = live_events_file
 
     try:
         proc = subprocess.Popen(
@@ -554,6 +558,55 @@ async def get_job_logs(
                     await asyncio.sleep(0.5)
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+@app.get("/api/jobs/{job_id}/live")
+async def get_job_live(job_id: str):
+    """Stream prompt/response pairs as SSE events during a running evaluation."""
+    _validate_id(job_id, "job_id")
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    events_path = LOGS_DIR / f"{job_id}.events.jsonl"
+
+    async def generate():
+        lines_sent = 0
+        while True:
+            # Read any new lines from the events file
+            if events_path.exists():
+                try:
+                    async with aiofiles.open(events_path, "r") as f:
+                        all_lines = await f.readlines()
+                    new_lines = all_lines[lines_sent:]
+                    for line in new_lines:
+                        line = line.strip()
+                        if line:
+                            yield f"data: {line}\n\n"
+                            lines_sent += 1
+                except Exception:
+                    pass
+
+            # Check if job is done
+            j = _jobs.get(job_id)
+            if j and j.status not in (JobStatus.RUNNING, JobStatus.PENDING):
+                # Flush any remaining lines
+                if events_path.exists():
+                    try:
+                        async with aiofiles.open(events_path, "r") as f:
+                            all_lines = await f.readlines()
+                        for line in all_lines[lines_sent:]:
+                            line = line.strip()
+                            if line:
+                                yield f"data: {line}\n\n"
+                    except Exception:
+                        pass
+                yield f"event: done\ndata: {{\"status\": \"{j.status}\"}}\n\n"
+                break
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.delete("/api/jobs/{job_id}")

@@ -180,12 +180,34 @@ class GeneralDS1000(Task):
         """
         dataset = self.get_dataset()
         num_correct = 0
+        num_errors = 0
+        details = {}
         print("Scoring generations...")
         for i, ref in tqdm.tqdm(enumerate(references), total=len(references)):
             test = [doc for doc in dataset if doc["reference_code"] == ref][0]
-            for gen in generations[i]:
-                is_correct = test.test(gen)
-                if is_correct:
-                    num_correct += 1
+            for comp_id, gen in enumerate(generations[i]):
+                passed = False
+                result_str = "failed"
+                try:
+                    is_correct = test.test(gen)
+                    if is_correct:
+                        num_correct += 1
+                        passed = True
+                        result_str = "passed"
+                except Exception as e:
+                    num_errors += 1
+                    result_str = f"{type(e).__name__}: {e}"
+                    if num_errors <= 5:
+                        print(f"  Warning: test execution error on problem {i}: {result_str}")
+                    elif num_errors == 6:
+                        print("  (suppressing further error messages)")
+                details.setdefault(i, []).append(
+                    (comp_id, {"passed": passed, "result": result_str})
+                )
+        if num_errors:
+            print(f"  Total test execution errors: {num_errors}/{len(references) * len(generations[0])}")
         accuracy = num_correct / len(references) / len(generations[0])
-        return {f"mean pass@1 accuracy ({len(generations[0])} samples)": accuracy}
+        return {
+            f"mean pass@1 accuracy ({len(generations[0])} samples)": accuracy,
+            "details": details,
+        }

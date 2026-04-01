@@ -39,9 +39,8 @@ _CITATION = """
 """
 
 LANGUAGES = [
-    "py",
     "sh",
-    "clj"
+    "clj",
     "cpp",
     "cs",
     "d",
@@ -53,7 +52,7 @@ LANGUAGES = [
     "js",
     "jl",
     "lua",
-    "ml"
+    "ml",
     "pl",
     "php",
     "r",
@@ -178,19 +177,33 @@ class GeneralMultiPLE(Task):
         for file in tqdm(list_files):
             evaluate_problem(temp_dir, file, max_workers)
 
-        # compute pass@k scores
-        result_array = np.array(
-            [for_file(p) for p in Path(temp_dir).glob("*.results.json")]
-        )
+        # compute pass@k scores and collect per-problem details
+        details = {}
+        results_files = sorted(Path(temp_dir).glob("*.results.json"))
+        result_array = np.array([for_file(p) for p in results_files])
         result = result_array.mean(axis=0)
-        name = (
-            temp_dir.split("/")[-1]
-            if temp_dir.split("/")[-1] != ""
-            else temp_dir.split("/")[-2]
-        )
         results = {
             f"pass@{k}": v
             for k, v in zip([1, 10, 100], result)
             if k <= len(generations[0])
         }
+
+        # Build details from the per-problem results files
+        # Map problem names back to task indices
+        name_to_idx = {pn["name"]: i for i, pn in enumerate(prompts_names)}
+        for results_path in results_files:
+            with open(results_path, "r") as f:
+                data = json.load(f)
+            problem_name = data.get("name", "")
+            task_idx = name_to_idx.get(problem_name)
+            if task_idx is None:
+                continue
+            task_details = []
+            for comp_id, r in enumerate(data.get("results", [])):
+                passed = r.get("status") == "OK" and r.get("exit_code") == 0
+                result_str = "passed" if passed else f"status={r.get('status')}, exit_code={r.get('exit_code')}"
+                task_details.append((comp_id, {"passed": passed, "result": result_str}))
+            details[task_idx] = task_details
+
+        results["details"] = details
         return results

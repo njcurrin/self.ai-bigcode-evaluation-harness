@@ -64,10 +64,11 @@ class InstructHumanEval(Task):
         :param references: list(str)
             list of str containing references
         """
-        results, _ = compute_code_eval(
+        results, details = compute_code_eval(
             references=references,
             predictions=generations,
         )
+        results["details"] = details
         return results
 
 

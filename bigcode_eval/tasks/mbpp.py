@@ -28,7 +28,8 @@ class MBPP(Task):
     answers, generation settings and evaluation methods.
     """
 
-    DATASET_PATH = "mbpp"
+    DATASET_PATH = "google-research-datasets/mbpp"
+    DATASET_NAME = "full"
 
     def __init__(self):
         super().__init__(
@@ -79,8 +80,9 @@ class MBPP(Task):
         :param references: list(str)
             list of str containing refrences
         """
-        results, _ = compute_code_eval(
+        results, details = compute_code_eval(
             references=references,
             predictions=generations,
         )
+        results["details"] = details
         return results

@@ -129,11 +129,15 @@ class Parity(Task):
             list of str containing refrences
         """
         out = {}
+        all_details = {}
         # Compute metrics for each number of bugs
         for idx, gens in tqdm.tqdm(enumerate(generations), total=len(generations)):
-            results, _ = compute_code_eval(
+            results, details = compute_code_eval(
                 references=[self.parity_tests for _ in gens],
                 predictions=[[g] for g in gens],
             )
             out[f"{idx+1} bugs"] = results
+            if details:
+                all_details[idx] = details[0]
+        out["details"] = all_details
         return out

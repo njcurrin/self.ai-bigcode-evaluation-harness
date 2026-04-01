@@ -117,17 +117,21 @@ class QuixBugs(Task):
             list of str containing refrences
         """
         results = {}
+        all_details = {}
         for i, (gen, (name, ref)) in enumerate(zip(generations, references)):
-            sub_results, _ = compute_code_eval(
+            sub_results, sub_details = compute_code_eval(
                 references=[ref],
                 predictions=[gen],
                 timeout=10, # Levenshtein distance is slow
             )
             results[name] = sub_results
+            if sub_details:
+                all_details[i] = sub_details[0]
         # Provide average of all metrics computed
         if results:
             results["all"] = {
                 k: sum(v[k] for v in results.values()) / len(results) for k in results[list(results.keys())[0]]
             }
             results["num_correct"] = results["all"]["pass@1"] * (len(results) - 1) # -1 for the all metric
+        results["details"] = all_details
         return results

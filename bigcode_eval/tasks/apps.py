@@ -116,9 +116,23 @@ class GeneralAPPS(Task):
             list of str containing refrences (not needed for APPS Task)
         """
         code_metric = load("codeparrot/apps_metric")
-        if level is None:
-            level = self.DATASET_NAME
         results = code_metric.compute(
-            predictions=generations, k_list=self.k_list, level=self.DATASET_NAME
+            predictions=generations, k_list=self.k_list, level=self.DATASET_NAME,
+            results_details=True,
         )
+        # Build details from per-problem results if available
+        if "results" in results:
+            details = {}
+            for task_id, task_results in enumerate(results["results"]):
+                task_details = []
+                if isinstance(task_results, list):
+                    for comp_id, r in enumerate(task_results):
+                        passed = r == True or (isinstance(r, list) and all(x == True for x in r))
+                        result_str = "passed" if passed else str(r)
+                        task_details.append((comp_id, {"passed": passed, "result": result_str}))
+                else:
+                    passed = task_results == True
+                    task_details.append((0, {"passed": passed, "result": "passed" if passed else str(task_results)}))
+                details[task_id] = task_details
+            results["details"] = details
         return results

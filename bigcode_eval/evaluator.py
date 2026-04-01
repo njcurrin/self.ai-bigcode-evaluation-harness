@@ -146,11 +146,21 @@ class Evaluator:
                             "passed": result_info["passed"],
                             "result": result_info["result"],
                         })
+                    # Support both dict-like objects and objects with subscript access only
+                    def _doc_get(d, key, default=""):
+                        try:
+                            return d.get(key, default)
+                        except AttributeError:
+                            try:
+                                return d[key]
+                            except (KeyError, IndexError, TypeError):
+                                return default
+
                     entry = {
-                        "task_id": doc.get("task_id", f"task_{task_id}"),
+                        "task_id": _doc_get(doc, "task_id", f"task_{task_id}"),
                         "prompt": prompt,
-                        "entry_point": doc.get("entry_point", ""),
-                        "canonical_solution": doc.get("canonical_solution", ""),
+                        "entry_point": _doc_get(doc, "entry_point"),
+                        "canonical_solution": _doc_get(doc, "canonical_solution"),
                         "reference_test": references[task_id],
                         "samples": samples,
                     }

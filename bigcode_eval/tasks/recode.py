@@ -171,4 +171,5 @@ class GeneralPerturbedHumanEval(Task):
             rp1[transformation] = res
 
         # TODO: for overall-performance, a prompt is solved if correct over the s prompts for all transformation categories.
+        rp1["details"] = detailed_results
         return rp1

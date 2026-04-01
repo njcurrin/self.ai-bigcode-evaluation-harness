@@ -32,6 +32,7 @@ class MBPPPlus(MBPP):
     """
 
     DATASET_PATH = "evalplus/mbppplus"
+    DATASET_NAME = None
 
     def get_prompt(self, doc):
         """Builds the prompt for the LM to generate from.
@@ -66,9 +67,10 @@ class MBPPPlus(MBPP):
         :param references: list(str)
             list of str containing refrences
         """
-        results, _ = compute_code_eval(
+        results, details = compute_code_eval(
             references=references,
             predictions=generations,
             timeout=10.0,  # 10s timeout
         )
+        results["details"] = details
         return results

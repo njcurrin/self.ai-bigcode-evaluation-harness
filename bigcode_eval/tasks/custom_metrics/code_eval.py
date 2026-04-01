@@ -151,7 +151,11 @@ def compute_code_eval(predictions, references, k=[1, 10, 100], num_workers=4, ti
                 n_samples += 1
 
         for future in as_completed(futures):
-            result = future.result()
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"  Warning: check_correctness worker failed: {type(e).__name__}: {e}")
+                continue
             results[result["task_id"]].append((result["completion_id"], result))
 
     total, correct = [], []

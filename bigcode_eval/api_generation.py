@@ -1,9 +1,16 @@
 import json
+import os
 import warnings
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import requests
 from tqdm import tqdm
+
+
+def _is_chat_endpoint(api_endpoint: str) -> bool:
+    """Detect whether the endpoint is a chat completions or text completions API."""
+    return "chat/completions" in api_endpoint
 
 
 def api_parallel_generations(
@@ -17,7 +24,7 @@ def api_parallel_generations(
     intermediate_generations: Optional[List[Optional[List[Optional[str]]]]] = None,
     intermediate_save_generations_path: Optional[str] = None,
 ):
-    """Generate completions via OpenAI-compatible API instead of local model."""
+    """Generate completions via OpenAI-compatible API (chat or text completions)."""
     if args.load_generations_path:
         with open(args.load_generations_path) as fp:
             generations = json.load(fp)
@@ -28,6 +35,7 @@ def api_parallel_generations(
 
     generations = [] if not intermediate_generations else list(intermediate_generations)
     limit_start = args.limit_start + curr_sample_idx
+    is_chat = _is_chat_endpoint(api_endpoint)
 
     # Build request headers
     headers = {"Content-Type": "application/json"}
@@ -42,7 +50,7 @@ def api_parallel_generations(
     api_stop = stop_words[:4] if stop_words else None
 
     print(f"number of problems for this task is {n_tasks}")
-    print(f"Generating via API: {api_endpoint}")
+    print(f"Generating via API: {api_endpoint} ({'chat' if is_chat else 'completions'} mode)")
 
     for sample_idx in tqdm(range(n_tasks), desc="API generation"):
         dataset_idx = limit_start + sample_idx
@@ -68,14 +76,24 @@ def api_parallel_generations(
         else:
             raise ValueError(f"Unsupported prompt format: {type(prompt_contents)}")
 
-        request_body = {
-            "model": args.model,
-            "prompt": prompt,
-            "max_tokens": args.max_length_generation,
-            "n": args.n_samples,
-            "temperature": args.temperature if args.do_sample else 0.0,
-            "top_p": args.top_p,
-        }
+        if is_chat:
+            request_body = {
+                "model": args.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": args.max_length_generation,
+                "n": args.n_samples,
+                "temperature": args.temperature if args.do_sample else 0.0,
+                "top_p": args.top_p,
+            }
+        else:
+            request_body = {
+                "model": args.model,
+                "prompt": prompt,
+                "max_tokens": args.max_length_generation,
+                "n": args.n_samples,
+                "temperature": args.temperature if args.do_sample else 0.0,
+                "top_p": args.top_p,
+            }
         if api_stop:
             request_body["stop"] = api_stop
 
@@ -92,7 +110,10 @@ def api_parallel_generations(
 
         sample_generations = []
         for choice in result["choices"]:
-            gen_text = choice["text"]
+            if is_chat:
+                gen_text = choice.get("message", {}).get("content", "")
+            else:
+                gen_text = choice.get("text", "")
             # The API returns only the completion; prepend prompt to match local behavior
             # (postprocess_generation expects prompt + completion)
             full_text = prompt + gen_text
@@ -101,6 +122,30 @@ def api_parallel_generations(
             sample_generations.append(full_text)
 
         generations.append(sample_generations)
+
+        # Write live event for streaming UI
+        live_events_path = os.environ.get("BIGCODE_LIVE_EVENTS_PATH")
+        if live_events_path:
+            item = dataset[dataset_idx]
+            task_id = item.get("task_id", f"task_{sample_idx}") if isinstance(item, dict) else f"task_{sample_idx}"
+            # Strip the prompt prefix back out for the completion
+            completions = []
+            for gen in sample_generations:
+                comp = gen[len(prompt):] if gen.startswith(prompt) else gen
+                completions.append(comp)
+            event = {
+                "index": sample_idx,
+                "total": n_tasks,
+                "task_id": task_id,
+                "prompt": prompt,
+                "completions": completions,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                with open(live_events_path, "a") as ef:
+                    ef.write(json.dumps(event) + "\n")
+            except Exception as e:
+                print(f"\nFailed to write live event: {e}")
 
         # Intermediate save
         if save_every_k_tasks >= 1 and (sample_idx + 1) % save_every_k_tasks == 0:
